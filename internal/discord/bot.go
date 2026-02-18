@@ -2,8 +2,10 @@ package discord
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 
@@ -107,13 +109,7 @@ func (b *Bot) registerCommands() error {
 
 	guildID := b.config.GuildID
 	for _, cmd := range commands {
-		var err error
-		if guildID != "" {
-			_, err = b.session.ApplicationCommandCreate(b.session.State.User.ID, guildID, cmd)
-		} else {
-			_, err = b.session.ApplicationCommandCreate(b.session.State.User.ID, "", cmd)
-		}
-		if err != nil {
+		if _, err := b.session.ApplicationCommandCreate(b.session.State.User.ID, guildID, cmd); err != nil {
 			return fmt.Errorf("failed to create command %s: %w", cmd.Name, err)
 		}
 	}
@@ -192,7 +188,7 @@ func (b *Bot) handleGroupDelete(s *discordgo.Session, i *discordgo.InteractionCr
 	// Get group from database
 	group, err := b.store.GetGroupByForumThreadID(threadID)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			b.respondError(s, i.Interaction, "Gruppe nicht gefunden")
 		} else {
 			b.respondError(s, i.Interaction, fmt.Sprintf("Fehler beim Abrufen der Gruppe: %v", err))
@@ -267,7 +263,7 @@ func (b *Bot) handleEventCreate(s *discordgo.Session, i *discordgo.InteractionCr
 	// Get group from database
 	group, err := b.store.GetGroupByForumThreadID(threadID)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			b.respondError(s, i.Interaction, "Gruppe nicht gefunden")
 		} else {
 			b.respondError(s, i.Interaction, fmt.Sprintf("Fehler beim Abrufen der Gruppe: %v", err))
@@ -284,10 +280,14 @@ func (b *Bot) handleEventCreate(s *discordgo.Session, i *discordgo.InteractionCr
 	}
 
 	// Show modal for event creation
-	err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+	b.showEventModal(s, i, group.ID)
+}
+
+func (b *Bot) showEventModal(s *discordgo.Session, i *discordgo.InteractionCreate, groupID int64) {
+	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseModal,
 		Data: &discordgo.InteractionResponseData{
-			CustomID: fmt.Sprintf("event_create_modal_%d", group.ID),
+			CustomID: fmt.Sprintf("event_create_modal_%d", groupID),
 			Title:    "Event erstellen",
 			Components: []discordgo.MessageComponent{
 				discordgo.ActionsRow{
@@ -351,7 +351,7 @@ func (b *Bot) handleEventCreate(s *discordgo.Session, i *discordgo.InteractionCr
 		},
 	})
 	if err != nil {
-		log.Printf("Failed to show modal: %v", err)
+		log.Printf("Failed to show event modal: %v", err)
 	}
 }
 
@@ -429,8 +429,12 @@ func (b *Bot) handleEventCreateModal(s *discordgo.Session, i *discordgo.Interact
 	data := i.ModalSubmitData()
 
 	// Parse group ID from custom ID
-	var groupID int64
-	fmt.Sscanf(data.CustomID, "event_create_modal_%d", &groupID)
+	groupIDStr := strings.TrimPrefix(data.CustomID, "event_create_modal_")
+	groupID, err := strconv.ParseInt(groupIDStr, 10, 64)
+	if err != nil {
+		b.respondError(s, i.Interaction, "Ungültige Gruppen-ID")
+		return
+	}
 
 	// Get group from database
 	group, err := b.store.GetGroupByID(groupID)
@@ -464,6 +468,11 @@ func (b *Bot) handleEventCreateModal(s *discordgo.Session, i *discordgo.Interact
 		}
 	}
 
+	if title == "" {
+		b.respondError(s, i.Interaction, "Event-Titel darf nicht leer sein")
+		return
+	}
+
 	// Parse date and time
 	dateTimeStr := dateStr
 	if timeStr != "" {
@@ -474,14 +483,18 @@ func (b *Bot) handleEventCreateModal(s *discordgo.Session, i *discordgo.Interact
 
 	startsAt, err := time.Parse("2006-01-02 15:04", dateTimeStr)
 	if err != nil {
-		b.respondError(s, i.Interaction, "Ungültiges Datums- oder Zeitformat")
+		b.respondError(s, i.Interaction, "Ungültiges Datums- oder Zeitformat. Bitte verwende JJJJ-MM-TT und HH:MM")
 		return
 	}
 
 	// Parse duration
 	var duration int
 	if durationStr != "" {
-		fmt.Sscanf(durationStr, "%d", &duration)
+		duration, err = strconv.Atoi(strings.TrimSpace(durationStr))
+		if err != nil || duration < 0 {
+			b.respondError(s, i.Interaction, "Ungültige Dauer. Bitte gib eine positive Zahl in Minuten an")
+			return
+		}
 	}
 
 	// Create event
@@ -522,8 +535,11 @@ func (b *Bot) handleComponent(s *discordgo.Session, i *discordgo.InteractionCrea
 
 func (b *Bot) handleJoinButton(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	data := i.MessageComponentData()
-	var groupID int64
-	fmt.Sscanf(data.CustomID, "join_%d", &groupID)
+	groupID, err := parseGroupID(data.CustomID, "join_")
+	if err != nil {
+		b.respondError(s, i.Interaction, "Ungültige Gruppen-ID")
+		return
+	}
 
 	group, err := b.store.GetGroupByID(groupID)
 	if err != nil {
@@ -562,8 +578,11 @@ func (b *Bot) handleJoinButton(s *discordgo.Session, i *discordgo.InteractionCre
 
 func (b *Bot) handleLeaveButton(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	data := i.MessageComponentData()
-	var groupID int64
-	fmt.Sscanf(data.CustomID, "leave_%d", &groupID)
+	groupID, err := parseGroupID(data.CustomID, "leave_")
+	if err != nil {
+		b.respondError(s, i.Interaction, "Ungültige Gruppen-ID")
+		return
+	}
 
 	group, err := b.store.GetGroupByID(groupID)
 	if err != nil {
@@ -607,8 +626,11 @@ func (b *Bot) handleLeaveButton(s *discordgo.Session, i *discordgo.InteractionCr
 
 func (b *Bot) handleAddEventButton(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	data := i.MessageComponentData()
-	var groupID int64
-	fmt.Sscanf(data.CustomID, "add_event_%d", &groupID)
+	groupID, err := parseGroupID(data.CustomID, "add_event_")
+	if err != nil {
+		b.respondError(s, i.Interaction, "Ungültige Gruppen-ID")
+		return
+	}
 
 	group, err := b.store.GetGroupByID(groupID)
 	if err != nil {
@@ -625,75 +647,7 @@ func (b *Bot) handleAddEventButton(s *discordgo.Session, i *discordgo.Interactio
 	}
 
 	// Show modal for event creation
-	err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseModal,
-		Data: &discordgo.InteractionResponseData{
-			CustomID: fmt.Sprintf("event_create_modal_%d", group.ID),
-			Title:    "Event erstellen",
-			Components: []discordgo.MessageComponent{
-				discordgo.ActionsRow{
-					Components: []discordgo.MessageComponent{
-						discordgo.TextInput{
-							CustomID:    "event_title",
-							Label:       "Event-Titel",
-							Style:       discordgo.TextInputShort,
-							Required:    true,
-							MaxLength:   100,
-							Placeholder: "Study session",
-						},
-					},
-				},
-				discordgo.ActionsRow{
-					Components: []discordgo.MessageComponent{
-						discordgo.TextInput{
-							CustomID:    "event_date",
-							Label:       "Datum (JJJJ-MM-TT)",
-							Style:       discordgo.TextInputShort,
-							Required:    true,
-							Placeholder: "2024-12-25",
-						},
-					},
-				},
-				discordgo.ActionsRow{
-					Components: []discordgo.MessageComponent{
-						discordgo.TextInput{
-							CustomID:    "event_time",
-							Label:       "Zeit (HH:MM, optional)",
-							Style:       discordgo.TextInputShort,
-							Required:    false,
-							Placeholder: "14:30",
-						},
-					},
-				},
-				discordgo.ActionsRow{
-					Components: []discordgo.MessageComponent{
-						discordgo.TextInput{
-							CustomID:    "event_duration",
-							Label:       "Dauer (Minuten, optional)",
-							Style:       discordgo.TextInputShort,
-							Required:    false,
-							Placeholder: "60",
-						},
-					},
-				},
-				discordgo.ActionsRow{
-					Components: []discordgo.MessageComponent{
-						discordgo.TextInput{
-							CustomID:    "event_notes",
-							Label:       "Notizen (optional)",
-							Style:       discordgo.TextInputParagraph,
-							Required:    false,
-							MaxLength:   500,
-							Placeholder: "Additional information...",
-						},
-					},
-				},
-			},
-		},
-	})
-	if err != nil {
-		log.Printf("Failed to show modal: %v", err)
-	}
+	b.showEventModal(s, i, group.ID)
 }
 
 func (b *Bot) handleGroupTagsSelect(s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -773,10 +727,17 @@ func (b *Bot) handleGroupTagsSelect(s *discordgo.Session, i *discordgo.Interacti
 		},
 	}
 
-	// Create forum thread with proper embed
+	// Resolve selected tags to forum channel tag IDs (ensures tags exist on the forum channel)
+	appliedTagIDs, err := b.resolveForumTagIDs(s, selectedTags)
+	if err != nil {
+		log.Printf("Warning: could not apply forum tags to thread: %v", err)
+	}
+
+	// Create forum thread with proper embed and applied tags
 	thread, err := s.ForumThreadStartComplex(b.config.ForumChannelID,
 		&discordgo.ThreadStart{
-			Name: groupName,
+			Name:        groupName,
+			AppliedTags: appliedTagIDs,
 		},
 		&discordgo.MessageSend{
 			Embeds:     []*discordgo.MessageEmbed{initialEmbed},
@@ -787,6 +748,12 @@ func (b *Bot) handleGroupTagsSelect(s *discordgo.Session, i *discordgo.Interacti
 		return
 	}
 
+	// Get the planner message ID from the thread's starter message
+	plannerMessageID := ""
+	if len(thread.Messages) > 0 {
+		plannerMessageID = thread.Messages[0].ID
+	}
+
 	// Save to database with selected tags
 	group := &domain.Group{
 		GuildID:          guildID,
@@ -794,6 +761,7 @@ func (b *Bot) handleGroupTagsSelect(s *discordgo.Session, i *discordgo.Interacti
 		OwnerUserID:      i.Member.User.ID,
 		ForumThreadID:    thread.ID,
 		PrivateChannelID: privateChannel.ID,
+		PlannerMessageID: plannerMessageID,
 		Tags:             selectedTags,
 		CreatedAt:        time.Now(),
 	}
@@ -830,22 +798,33 @@ func (b *Bot) updatePlannerEmbed(s *discordgo.Session, group *domain.Group) erro
 		return err
 	}
 
-	// Build event list
+	// Get member count
+	members, err := b.store.GetMembers(group.ID)
+	if err != nil {
+		return err
+	}
+
+	// Build event list, filtering out past events
+	now := time.Now()
 	eventList := ""
-	if len(events) == 0 {
-		eventList = "Noch keine Events geplant"
-	} else {
-		for _, event := range events {
-			dateStr := event.StartsAt.Format("2006-01-02 15:04")
-			eventList += fmt.Sprintf("• **%s** - %s", event.Title, dateStr)
-			if event.DurationMin > 0 {
-				eventList += fmt.Sprintf(" (%d min)", event.DurationMin)
-			}
-			if event.Notes != "" {
-				eventList += fmt.Sprintf("\n  _%s_", event.Notes)
-			}
-			eventList += "\n"
+	upcomingCount := 0
+	for _, event := range events {
+		if event.StartsAt.Before(now) {
+			continue
 		}
+		upcomingCount++
+		dateStr := event.StartsAt.Format("2006-01-02 15:04")
+		eventList += fmt.Sprintf("• **%s** - %s", event.Title, dateStr)
+		if event.DurationMin > 0 {
+			eventList += fmt.Sprintf(" (%d min)", event.DurationMin)
+		}
+		if event.Notes != "" {
+			eventList += fmt.Sprintf("\n  _%s_", event.Notes)
+		}
+		eventList += "\n"
+	}
+	if upcomingCount == 0 {
+		eventList = "Noch keine Events geplant"
 	}
 
 	// Build tags display
@@ -856,8 +835,8 @@ func (b *Bot) updatePlannerEmbed(s *discordgo.Session, group *domain.Group) erro
 
 	embed := &discordgo.MessageEmbed{
 		Title: "📚 Lerngruppen Planer",
-		Description: fmt.Sprintf("**Gruppe:** %s\n**Privater Kanal:** <#%s>\n**Tags:** %s\n\n**Anstehende Events:**\n%s",
-			group.Name, group.PrivateChannelID, tagsDisplay, eventList),
+		Description: fmt.Sprintf("**Gruppe:** %s\n**Privater Kanal:** <#%s>\n**Tags:** %s\n**Mitglieder:** %d\n\n**Anstehende Events:**\n%s",
+			group.Name, group.PrivateChannelID, tagsDisplay, len(members), eventList),
 		Color:     0x5865F2,
 		Timestamp: time.Now().Format(time.RFC3339),
 	}
@@ -894,14 +873,25 @@ func (b *Bot) updatePlannerEmbed(s *discordgo.Session, group *domain.Group) erro
 		},
 	}
 
-	messages, err := s.ChannelMessages(group.ForumThreadID, 1, "", "", "")
-	if err != nil || len(messages) == 0 {
-		return fmt.Errorf("failed to get thread messages: %w", err)
+	// Use stored planner message ID if available, otherwise fall back to fetching
+	messageID := group.PlannerMessageID
+	if messageID == "" {
+		messages, err := s.ChannelMessages(group.ForumThreadID, 1, "", "", "")
+		if err != nil || len(messages) == 0 {
+			return fmt.Errorf("failed to get thread messages: %w", err)
+		}
+		messageID = messages[0].ID
+
+		// Store the message ID for future use
+		if err := b.store.UpdatePlannerMessageID(group.ID, messageID); err != nil {
+			log.Printf("Failed to store planner message ID: %v", err)
+		}
+		group.PlannerMessageID = messageID
 	}
 
 	_, err = s.ChannelMessageEditComplex(&discordgo.MessageEdit{
 		Channel:    group.ForumThreadID,
-		ID:         messages[0].ID,
+		ID:         messageID,
 		Embeds:     &[]*discordgo.MessageEmbed{embed},
 		Components: &components,
 	})
@@ -918,7 +908,7 @@ func (b *Bot) respondError(s *discordgo.Session, i *discordgo.Interaction, messa
 		},
 	})
 	if err != nil {
-		return
+		log.Printf("Failed to send error response: %v", err)
 	}
 }
 
@@ -931,7 +921,7 @@ func (b *Bot) respondSuccess(s *discordgo.Session, i *discordgo.Interaction, mes
 		},
 	})
 	if err != nil {
-		return
+		log.Printf("Failed to send success response: %v", err)
 	}
 }
 
@@ -940,8 +930,84 @@ func (b *Bot) followUpError(s *discordgo.Session, i *discordgo.Interaction, mess
 		Content: strPtr("❌ " + message),
 	})
 	if err != nil {
-		return
+		log.Printf("Failed to send follow-up error: %v", err)
 	}
+}
+
+// resolveForumTagIDs ensures the selected tag names exist as available tags on the
+// forum channel and returns their IDs so they can be applied to a new thread.
+func (b *Bot) resolveForumTagIDs(s *discordgo.Session, selectedTags []string) ([]string, error) {
+	if len(selectedTags) == 0 {
+		return nil, nil
+	}
+
+	// Fetch the forum channel to get existing available tags
+	forumChannel, err := s.Channel(b.config.ForumChannelID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch forum channel: %w", err)
+	}
+
+	// Determine which selected tags are missing from the forum channel
+	existingTags := buildTagNameToIDMap(forumChannel.AvailableTags)
+	missingTags := findMissingTags(selectedTags, existingTags)
+
+	// If there are missing tags, add them to the forum channel
+	if len(missingTags) > 0 {
+		updatedTags := make([]discordgo.ForumTag, len(forumChannel.AvailableTags), len(forumChannel.AvailableTags)+len(missingTags))
+		copy(updatedTags, forumChannel.AvailableTags)
+		for _, tagName := range missingTags {
+			updatedTags = append(updatedTags, discordgo.ForumTag{Name: tagName})
+		}
+
+		editedChannel, err := s.ChannelEditComplex(b.config.ForumChannelID, &discordgo.ChannelEdit{
+			AvailableTags: &updatedTags,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to update forum channel tags: %w", err)
+		}
+
+		// Refresh the tag name-to-ID map from the updated channel
+		existingTags = buildTagNameToIDMap(editedChannel.AvailableTags)
+	}
+
+	// Collect the IDs for all selected tags
+	return collectTagIDs(selectedTags, existingTags), nil
+}
+
+// buildTagNameToIDMap creates a map from tag name to tag ID.
+func buildTagNameToIDMap(tags []discordgo.ForumTag) map[string]string {
+	m := make(map[string]string, len(tags))
+	for _, tag := range tags {
+		m[tag.Name] = tag.ID
+	}
+	return m
+}
+
+// findMissingTags returns tag names from selectedTags that don't exist in existingTags.
+func findMissingTags(selectedTags []string, existingTags map[string]string) []string {
+	var missing []string
+	for _, tagName := range selectedTags {
+		if _, exists := existingTags[tagName]; !exists {
+			missing = append(missing, tagName)
+		}
+	}
+	return missing
+}
+
+// collectTagIDs returns the tag IDs for the given tag names from the map.
+func collectTagIDs(selectedTags []string, tagMap map[string]string) []string {
+	var ids []string
+	for _, tagName := range selectedTags {
+		if id, ok := tagMap[tagName]; ok {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+func parseGroupID(customID, prefix string) (int64, error) {
+	idStr := strings.TrimPrefix(customID, prefix)
+	return strconv.ParseInt(idStr, 10, 64)
 }
 
 func strPtr(s string) *string {
