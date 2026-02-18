@@ -730,7 +730,7 @@ func (b *Bot) handleGroupTagsSelect(s *discordgo.Session, i *discordgo.Interacti
 	// Resolve selected tags to forum channel tag IDs (ensures tags exist on the forum channel)
 	appliedTagIDs, err := b.resolveForumTagIDs(s, selectedTags)
 	if err != nil {
-		log.Printf("Failed to resolve forum tags: %v", err)
+		log.Printf("Warning: could not apply forum tags to thread: %v", err)
 	}
 
 	// Create forum thread with proper embed and applied tags
