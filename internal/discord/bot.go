@@ -741,6 +741,12 @@ func (b *Bot) handleGroupTagsSelect(s *discordgo.Session, i *discordgo.Interacti
 		return
 	}
 
+	// Get the planner message ID from the thread's starter message
+	plannerMessageID := ""
+	if len(thread.Messages) > 0 {
+		plannerMessageID = thread.Messages[0].ID
+	}
+
 	// Save to database with selected tags
 	group := &domain.Group{
 		GuildID:          guildID,
@@ -748,7 +754,7 @@ func (b *Bot) handleGroupTagsSelect(s *discordgo.Session, i *discordgo.Interacti
 		OwnerUserID:      i.Member.User.ID,
 		ForumThreadID:    thread.ID,
 		PrivateChannelID: privateChannel.ID,
-		PlannerMessageID: thread.Messages[0].ID,
+		PlannerMessageID: plannerMessageID,
 		Tags:             selectedTags,
 		CreatedAt:        time.Now(),
 	}
