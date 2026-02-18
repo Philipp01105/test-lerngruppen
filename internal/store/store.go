@@ -78,6 +78,13 @@ func (s *Store) migrate() error {
 		) THEN
 			ALTER TABLE groups ADD COLUMN tags TEXT[] DEFAULT ARRAY[]::TEXT[];
 		END IF;
+
+		IF NOT EXISTS (
+			SELECT 1 FROM information_schema.columns 
+			WHERE table_name='groups' AND column_name='planner_message_id'
+		) THEN
+			ALTER TABLE groups ADD COLUMN planner_message_id TEXT DEFAULT '';
+		END IF;
 	END $$;
 	`
 
@@ -91,9 +98,9 @@ func (s *Store) Close() error {
 
 func (s *Store) CreateGroup(group *domain.Group) error {
 	err := s.db.QueryRow(
-		`INSERT INTO groups (guild_id, name, owner_user_id, forum_thread_id, private_channel_id, tags, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-		group.GuildID, group.Name, group.OwnerUserID, group.ForumThreadID, group.PrivateChannelID, pq.Array(group.Tags), group.CreatedAt,
+		`INSERT INTO groups (guild_id, name, owner_user_id, forum_thread_id, private_channel_id, planner_message_id, tags, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+		group.GuildID, group.Name, group.OwnerUserID, group.ForumThreadID, group.PrivateChannelID, group.PlannerMessageID, pq.Array(group.Tags), group.CreatedAt,
 	).Scan(&group.ID)
 	return err
 }
@@ -101,10 +108,10 @@ func (s *Store) CreateGroup(group *domain.Group) error {
 func (s *Store) GetGroupByID(id int64) (*domain.Group, error) {
 	group := &domain.Group{}
 	err := s.db.QueryRow(
-		`SELECT id, guild_id, name, owner_user_id, forum_thread_id, private_channel_id, tags, created_at
+		`SELECT id, guild_id, name, owner_user_id, forum_thread_id, private_channel_id, planner_message_id, tags, created_at
 		 FROM groups WHERE id = $1`,
 		id,
-	).Scan(&group.ID, &group.GuildID, &group.Name, &group.OwnerUserID, &group.ForumThreadID, &group.PrivateChannelID, pq.Array(&group.Tags), &group.CreatedAt)
+	).Scan(&group.ID, &group.GuildID, &group.Name, &group.OwnerUserID, &group.ForumThreadID, &group.PrivateChannelID, &group.PlannerMessageID, pq.Array(&group.Tags), &group.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -114,10 +121,10 @@ func (s *Store) GetGroupByID(id int64) (*domain.Group, error) {
 func (s *Store) GetGroupByForumThreadID(forumThreadID string) (*domain.Group, error) {
 	group := &domain.Group{}
 	err := s.db.QueryRow(
-		`SELECT id, guild_id, name, owner_user_id, forum_thread_id, private_channel_id, tags, created_at
+		`SELECT id, guild_id, name, owner_user_id, forum_thread_id, private_channel_id, planner_message_id, tags, created_at
 		 FROM groups WHERE forum_thread_id = $1`,
 		forumThreadID,
-	).Scan(&group.ID, &group.GuildID, &group.Name, &group.OwnerUserID, &group.ForumThreadID, &group.PrivateChannelID, pq.Array(&group.Tags), &group.CreatedAt)
+	).Scan(&group.ID, &group.GuildID, &group.Name, &group.OwnerUserID, &group.ForumThreadID, &group.PrivateChannelID, &group.PlannerMessageID, pq.Array(&group.Tags), &group.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -126,7 +133,7 @@ func (s *Store) GetGroupByForumThreadID(forumThreadID string) (*domain.Group, er
 
 func (s *Store) GetGroupsByOwner(ownerUserID string) ([]*domain.Group, error) {
 	rows, err := s.db.Query(
-		`SELECT id, guild_id, name, owner_user_id, forum_thread_id, private_channel_id, tags, created_at
+		`SELECT id, guild_id, name, owner_user_id, forum_thread_id, private_channel_id, planner_message_id, tags, created_at
 		 FROM groups WHERE owner_user_id = $1`,
 		ownerUserID,
 	)
@@ -138,7 +145,7 @@ func (s *Store) GetGroupsByOwner(ownerUserID string) ([]*domain.Group, error) {
 	var groups []*domain.Group
 	for rows.Next() {
 		group := &domain.Group{}
-		if err := rows.Scan(&group.ID, &group.GuildID, &group.Name, &group.OwnerUserID, &group.ForumThreadID, &group.PrivateChannelID, pq.Array(&group.Tags), &group.CreatedAt); err != nil {
+		if err := rows.Scan(&group.ID, &group.GuildID, &group.Name, &group.OwnerUserID, &group.ForumThreadID, &group.PrivateChannelID, &group.PlannerMessageID, pq.Array(&group.Tags), &group.CreatedAt); err != nil {
 			return nil, err
 		}
 		groups = append(groups, group)
@@ -148,7 +155,7 @@ func (s *Store) GetGroupsByOwner(ownerUserID string) ([]*domain.Group, error) {
 
 func (s *Store) GetAllGroups(guildID string) ([]*domain.Group, error) {
 	rows, err := s.db.Query(
-		`SELECT id, guild_id, name, owner_user_id, forum_thread_id, private_channel_id, tags, created_at
+		`SELECT id, guild_id, name, owner_user_id, forum_thread_id, private_channel_id, planner_message_id, tags, created_at
 		 FROM groups WHERE guild_id = $1`,
 		guildID,
 	)
@@ -160,7 +167,7 @@ func (s *Store) GetAllGroups(guildID string) ([]*domain.Group, error) {
 	var groups []*domain.Group
 	for rows.Next() {
 		group := &domain.Group{}
-		if err := rows.Scan(&group.ID, &group.GuildID, &group.Name, &group.OwnerUserID, &group.ForumThreadID, &group.PrivateChannelID, pq.Array(&group.Tags), &group.CreatedAt); err != nil {
+		if err := rows.Scan(&group.ID, &group.GuildID, &group.Name, &group.OwnerUserID, &group.ForumThreadID, &group.PrivateChannelID, &group.PlannerMessageID, pq.Array(&group.Tags), &group.CreatedAt); err != nil {
 			return nil, err
 		}
 		groups = append(groups, group)
@@ -170,6 +177,11 @@ func (s *Store) GetAllGroups(guildID string) ([]*domain.Group, error) {
 
 func (s *Store) DeleteGroup(id int64) error {
 	_, err := s.db.Exec(`DELETE FROM groups WHERE id = $1`, id)
+	return err
+}
+
+func (s *Store) UpdatePlannerMessageID(groupID int64, messageID string) error {
+	_, err := s.db.Exec(`UPDATE groups SET planner_message_id = $1 WHERE id = $2`, messageID, groupID)
 	return err
 }
 
@@ -222,7 +234,7 @@ func (s *Store) GetMembers(groupID int64) ([]string, error) {
 
 func (s *Store) GetUserGroups(userID string) ([]*domain.Group, error) {
 	rows, err := s.db.Query(
-		`SELECT g.id, g.guild_id, g.name, g.owner_user_id, g.forum_thread_id, g.private_channel_id, g.tags, g.created_at
+		`SELECT g.id, g.guild_id, g.name, g.owner_user_id, g.forum_thread_id, g.private_channel_id, g.planner_message_id, g.tags, g.created_at
 		 FROM groups g
 		 INNER JOIN memberships m ON g.id = m.group_id
 		 WHERE m.user_id = $1`,
@@ -236,7 +248,7 @@ func (s *Store) GetUserGroups(userID string) ([]*domain.Group, error) {
 	var groups []*domain.Group
 	for rows.Next() {
 		group := &domain.Group{}
-		if err := rows.Scan(&group.ID, &group.GuildID, &group.Name, &group.OwnerUserID, &group.ForumThreadID, &group.PrivateChannelID, pq.Array(&group.Tags), &group.CreatedAt); err != nil {
+		if err := rows.Scan(&group.ID, &group.GuildID, &group.Name, &group.OwnerUserID, &group.ForumThreadID, &group.PrivateChannelID, &group.PlannerMessageID, pq.Array(&group.Tags), &group.CreatedAt); err != nil {
 			return nil, err
 		}
 		groups = append(groups, group)

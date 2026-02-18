@@ -9,6 +9,7 @@ type Group struct {
 	OwnerUserID      string
 	ForumThreadID    string
 	PrivateChannelID string
+	PlannerMessageID string
 	Tags             []string
 	CreatedAt        time.Time
 }
